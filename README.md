@@ -10,6 +10,49 @@ separately after approval. Neither stage installs Copilot CLI/another agent host
 or creates cloud resources. This is a community bootstrap, not a Microsoft
 product or an official installer.
 
+## Short version
+
+**Yes: run the setup file first, then use the integration skill.**
+
+| Step | What you do | What it sets up |
+|---|---|---|
+| 1. Prerequisites | Download/extract this repository, review the script, then double-click **Setup.cmd**. Approve the displayed plan by typing **INSTALL**. | Git, Node.js/npm, .NET 10 SDK, and PAC CLI, in order. Azure CLI is optional. |
+| 2. Integrations | After setup succeeds, restart the Copilot desktop app and ask it to follow the **power-platform-integrations** skill using the prompt below. Approve its separate plan. | Your chosen Power Platform plugins, optional Dataverse, and Copilot Studio MCP registration, using supported setup methods. |
+| 3. Sign-in | When ready, complete the required sign-in and choose the intended environment. | Account access and permissions; neither previous step signs you in. |
+
+For **step 2**, paste this into a Copilot desktop chat:
+
+> I have finished running Setup.cmd. Read and follow
+> https://github.com/danieag/power-platform-setup/blob/main/skills/power-platform-integrations/SKILL.md.
+> Help me install Power Platform Skills, including Dataverse, and register
+> Copilot Studio MCP. Show the plan and ask for approval before changing
+> anything. Do not sign in or select an environment.
+
+Remove Dataverse or Copilot Studio MCP from the prompt if you do not need them.
+The agent can read the skill from the repository; you do not have to install
+the skill separately just to ask it to follow those instructions. A link does
+not permanently register a skill in the app.
+
+**Setup.cmd does not automatically run the integration skill.** The skill then
+performs supported commands/configuration changes for you; you do not normally
+need to copy the two installation commands into PowerShell. If a required
+capability or permission is unavailable, it explains the remaining desktop
+step instead of claiming success.
+
+Already have the prerequisites? Run `.\Setup.cmd -CheckOnly` first. If it reports
+that all selected prerequisites are ready, go straight to step 2.
+
+The other skill, [power-platform-setup](skills/power-platform-setup/SKILL.md),
+is an **alternative way to guide step 1 through an agent**, not an extra step
+you must run after Setup.cmd.
+
+Continue with the [long version](#long-version) for detailed instructions,
+supported PCs, security, troubleshooting, and what each stage changes.
+
+## Long version
+
+### Supported PCs and current limitations
+
 > **Initial release status:** syntax and non-installing regression tests are
 > automated. A complete installation on a pristine Windows Sandbox has **not**
 > been verified. This release targets **x64 Windows 11 / Windows 10 22H2** with
@@ -17,7 +60,7 @@ product or an official installer.
 > rather than silently mixing architectures. Use a vendor-supported Windows
 > version; Windows 10 support/security servicing is your responsibility.
 
-## Start here: download, extract, double-click
+### Step 1: download, extract, and run Setup.cmd
 
 1. On [this repository](https://github.com/danieag/power-platform-setup), choose
    **Code > Download ZIP**. Extract **all** files to a folder you can find.
@@ -31,8 +74,8 @@ product or an official installer.
    Microsoft .NET SDK, or optional Microsoft Azure CLI installer.
    If setup requests a restart, save your work, restart yourself, and run it again.
 5. After success, fully quit and reopen the Copilot desktop app and terminals.
-   Then use the integration skill or desktop controls to configure your chosen
-   plugins/MCP servers. Sign-in remains separate (below).
+   Continue to [step 2: the integration skill](#step-2-use-the-integration-skill-for-plugins-and-mcp).
+   Setup does not start that skill automatically. Sign-in remains separate.
 
 Internet access is needed **only after installation approval**. Setup does not
 need `winget`, Git, npm, or .NET to start. This is important in Windows Sandbox,
@@ -185,7 +228,11 @@ organization's approved process; do not disable those protections. For example,
 an organization's signed-script requirement needs an approved/signed copy,
 not a machine-wide policy relaxation. No automatic reboot is requested.
 
-## Stage two: let a skill install plugins and register MCP
+## Step 2: use the integration skill for plugins and MCP
+
+Use this skill **after step 1 has succeeded** (or check-only has confirmed your
+existing prerequisites are ready). This is where plugin installation and MCP
+registration happen, not in Setup.cmd.
 
 **Installed binaries do not mean plugins or authentication are configured.**
 The readiness summary keeps these three states separate.
@@ -233,7 +280,7 @@ The [package instructions](https://www.npmjs.com/package/@microsoft/copilot-stud
 currently require Node 22.18+ and recommend Node 24 LTS. Do not start a standalone
 server in a terminal and mistake the running process for a completed integration.
 
-### Desktop controls, verification, and sign-in
+### Desktop controls and verification
 
 The documented desktop path is **Customize**, then marketplace settings beside
 the marketplace dropdown to add `microsoft/power-platform-skills`; find and
@@ -249,7 +296,9 @@ policy exposes the same UI. Refresh/restart the app/session if necessary and
 verify that the actual capabilities appear. This repository's tests do **not**
 install plugins, register an MCP server, or prove a live desktop integration.
 
-Only afterward, intentionally set up sign-in/connections using the correct
+### Step 3: sign in separately
+
+Only after integration setup, intentionally set up sign-in/connections using the correct
 account, tenant, and environment. Relevant licensing and permissions remain
 separate. Neither setup stage collects tokens, runs `az login` / `pac auth
 create`, enables agent auto-approval or Windows features, or writes cloud
