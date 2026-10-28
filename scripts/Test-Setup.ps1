@@ -104,7 +104,7 @@ Test-Case 'inventory recognizes compatible binaries, bundled npm and the SDK rat
     function Get-BinaryVersion {
         param($Path)
         if ($Path -like '*git.exe') { return [version]'2.56.0' }
-        if ($Path -like '*node.exe') { return [version]'22.12.0' }
+        if ($Path -like '*node.exe') { return [version]'22.18.0' }
         if ($Path -like '*pac.exe') { return [version]'2.11.2' }
     }
     function Test-Path { $true }
@@ -126,6 +126,23 @@ Test-Case 'inventory rejects unsupported Node majors, absent npm, and runtime-on
     $state = @(Get-SetupState)
     Assert-Equal ($state | Where-Object Id -eq 'node').Ready $false
     Assert-Equal ($state | Where-Object Id -eq 'dotnet').Ready $false
+}
+
+Test-Case 'Node compatibility includes the Copilot Studio MCP minimum without accepting other majors' {
+    function Find-SetupExecutable { param($Name, $Candidates) "C:\fixture\$Name" }
+    function Get-BinaryVersion { $script:nodeUnderTest }
+    function Test-Path { $true }
+    function Get-Content { '{"version":"10.9.0"}' }
+    function Get-ChildItem {}
+    foreach ($case in @(
+        @{ Version = '22.17.0'; Ready = $false },
+        @{ Version = '22.18.0'; Ready = $true },
+        @{ Version = '24.0.0'; Ready = $true },
+        @{ Version = '25.0.0'; Ready = $false })) {
+        $script:nodeUnderTest = [version]$case.Version
+        $node = Get-SetupState | Where-Object Id -eq 'node'
+        Assert-Equal $node.Ready $case.Ready
+    }
 }
 
 Test-Case 'noninteractive mode requires both install and accept' {

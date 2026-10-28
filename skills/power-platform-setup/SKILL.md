@@ -22,9 +22,14 @@ does not automatically register this skill in the desktop app.
 5. Respect exit codes, stop on failure/restart requirement, and explain any
    terminal/Copilot restart needed. Report binaries, desktop plugins, and
    authentication separately.
+6. If the user also wants Power Platform plugins or Copilot Studio MCP, read
+   `skills/power-platform-integrations/SKILL.md` from this repository and use
+   its separate approval-gated integration stage. Do not claim that installing
+   prerequisites completed plugin/MCP registration.
 
 Never install Copilot CLI/another agent host, enable auto-approval, change
-persistent execution policy, run the CLI-targeted marketplace installer, sign
-in, choose an environment, or create cloud resources. For desktop plugins,
-follow the README's manual, version-dependent guidance; never infer plugin or
-auth readiness from the presence of executables.
+persistent execution policy, blindly run the broad marketplace installer, sign
+in, choose an environment, or create cloud resources. The integration skill can
+use supported commands on an already available CLI or documented shared MCP
+configuration; it must not install another host. Never infer plugin or auth
+readiness from the presence of executables.

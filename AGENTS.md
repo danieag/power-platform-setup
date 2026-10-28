@@ -22,15 +22,22 @@ the GitHub Copilot desktop app. It does not provision Power Platform resources.
    never report successful setup just because an installer exited. Reopen
    terminals and the desktop app after PATH changes. Do not automatically reboot.
 6. Report local tools, desktop plugins, and authentication as **separate**
-   readiness categories. Plugin setup is manual/version-dependent; do not claim
-   it was verified by this script.
+   readiness categories. The installer does not configure plugins/MCP.
+   For an approved integration request, use
+   `skills/power-platform-integrations/SKILL.md`: supported existing CLI
+   commands or documented shared MCP configuration can automate setup.
+   Verify desktop visibility separately; do not claim it was verified by the
+   prerequisite script.
 
-Do not install Copilot CLI/another host, invoke the marketplace's CLI-targeted
-`scripts/install.js`, auto-register unverified desktop plugins, persistently
-relax execution policy, enable agent auto-approval, disable Windows protections,
-log credentials, sign in, pick a tenant, enable Windows features, or write cloud
-resources. No private/personal skill, account, router, or MCP configuration
-belongs in this public project. Avoid exposing local paths in public reports.
+Do not install Copilot CLI/another host, blindly invoke the marketplace's broad
+`scripts/install.js`, claim unverified desktop registration, persistently relax
+execution policy, enable agent auto-approval, disable Windows protections, log
+credentials, sign in, pick a tenant, enable Windows features, or write cloud
+resources. The broad installer can target multiple hosts and enable auto-update;
+its effects require separate explicit approval. Preserve existing configuration
+when registering MCP servers. No private/personal skill, account, router, or MCP
+configuration belongs in this public project. Avoid exposing local paths in
+public reports.
 
 The reviewed launcher uses a **child-process-only** execution-policy exception;
 it never changes the persistent policy. Respect enterprise restrictions rather

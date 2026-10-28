@@ -3,9 +3,12 @@
 Set up the **local developer tools** used by Microsoft Power Platform skills, in
 the right order, with a plan and approval before anything is installed.
 
-You already have the **GitHub Copilot desktop app**. This project does **not**
-install Copilot CLI, another agent host, desktop plugins, or cloud resources.
-It is a community bootstrap, not a Microsoft product or an official installer.
+You already have the **GitHub Copilot desktop app**. The prerequisite script
+does **not** install desktop plugins or register MCP servers; an optional
+[second-stage skill](skills/power-platform-integrations/SKILL.md) handles that
+separately after approval. Neither stage installs Copilot CLI/another agent host
+or creates cloud resources. This is a community bootstrap, not a Microsoft
+product or an official installer.
 
 > **Initial release status:** syntax and non-installing regression tests are
 > automated. A complete installation on a pristine Windows Sandbox has **not**
@@ -28,7 +31,8 @@ It is a community bootstrap, not a Microsoft product or an official installer.
    Microsoft .NET SDK, or optional Microsoft Azure CLI installer.
    If setup requests a restart, save your work, restart yourself, and run it again.
 5. After success, fully quit and reopen the Copilot desktop app and terminals.
-   Then configure your chosen plugins and sign-in separately (below).
+   Then use the integration skill or desktop controls to configure your chosen
+   plugins/MCP servers. Sign-in remains separate (below).
 
 Internet access is needed **only after installation approval**. Setup does not
 need `winget`, Git, npm, or .NET to start. This is important in Windows Sandbox,
@@ -89,11 +93,16 @@ install commands:
 .\Setup.cmd -Install -Accept -NonInteractive -IncludeAzureCli
 ```
 
-The optional [thin skill](skills/power-platform-setup/SKILL.md) contains these
-same instructions. A GitHub URL does not itself install a skill. Load/copy that
-skill only using a mechanism supported by your app version, or let the agent
-read it directly. No personalized skills, MCP endpoints, or account settings
-are bundled.
+The optional [prerequisite skill](skills/power-platform-setup/SKILL.md) contains
+these same instructions. The separate
+[integration skill](skills/power-platform-integrations/SKILL.md) can then install
+approved plugins/register Copilot Studio MCP using supported commands or shared
+configuration. Skills instruct the agent to execute the work; they are not just
+command lists for the user to copy.
+
+A GitHub URL does not itself install a skill. Load/copy the skills only using a
+mechanism supported by your app version, or let the agent read them directly.
+No personalized skills, MCP endpoints, or account settings are bundled.
 
 ## What gets installed
 
@@ -103,18 +112,19 @@ order; optional Azure CLI comes last:
 | Order | Tool | Preserved when | If setup is needed |
 |---|---|---|---|
 | 1 | Git for Windows | Version 2.40 or newer | Current stable x64 Git installer, current-user program directory |
-| 2 | Node.js and npm | Node **22 or 24 LTS**, bundled npm 10+ | Current **24 LTS** x64 MSI, machine-wide |
+| 2 | Node.js and npm | Node **22.18+ or 24 LTS**, bundled npm 10+ | Current **24 LTS** x64 MSI, machine-wide |
 | 3 | .NET **SDK** | Stable **10.0** SDK files present | Current stable .NET 10 SDK x64 installer, machine-wide |
 | 4 | Power Platform CLI (PAC) | Recognized PAC executable version 1.0+ | Current stable `Microsoft.PowerApps.CLI.Tool`, global .NET tool for the current user |
 | Optional | Azure CLI | Recognized MSI installation 2.60+ and launcher present | Official x64 Azure CLI MSI, machine-wide |
 
 These are this bootstrap's compatibility baselines, not a guarantee that every
-Power Platform plugin supports every accepted version. Node 22 and 24 cover
-the current official marketplace's LTS requirements; this setup deliberately
-does not treat an arbitrary newer Node major as compatible. The .NET runtime
-alone is insufficient. Newer .NET SDK majors do not replace the required 10.0
-SDK. Compatible tools are not automatically updated to the latest patch;
-keep them patched using your normal maintenance process.
+Power Platform plugin supports every accepted version. Node 22.18+ and 24 cover
+the current Copilot Studio MCP package's requirements as well as the marketplace's
+LTS requirements; this setup deliberately does not treat an arbitrary newer Node
+major as compatible. The .NET runtime alone is insufficient. Newer .NET SDK
+majors do not replace the required 10.0 SDK. Compatible tools are not automatically
+updated to the latest patch; keep them patched using your normal maintenance
+process.
 
 Nonstandard/portable installations, version-manager shims, stale PATH entries,
 unknown file versions, and non-MSI Azure CLI installs may need manual repair.
@@ -175,40 +185,75 @@ organization's approved process; do not disable those protections. For example,
 an organization's signed-script requirement needs an approved/signed copy,
 not a machine-wide policy relaxation. No automatic reboot is requested.
 
-## Finish in the Copilot desktop app: plugins, then sign-in
+## Stage two: let a skill install plugins and register MCP
 
 **Installed binaries do not mean plugins or authentication are configured.**
 The readiness summary keeps these three states separate.
 
-The official marketplace is
-[`microsoft/power-platform-skills`](https://github.com/microsoft/power-platform-skills).
-Its published `scripts/install.js` currently detects **Copilot CLI / Claude
-Code**. This repository does **not** run it or install another host to make
-desktop plugin registration appear successful.
+Yes, a skill can tell the agent to run terminal commands and make approved
+configuration changes for you. You do **not** necessarily need to copy commands
+into PowerShell yourself. For example, ask the agent:
 
-In the desktop app, open **Customize** and look for the plugin/marketplace
-installation controls available in **your version**. If it supports adding a
-marketplace by repository, use `microsoft/power-platform-skills`, then install
-only the plugins needed for your work, such as `canvas-apps`,
-`code-apps-preview`, `model-apps`, or `power-automate`. The optional `dataverse`
-entry comes from the external official
-[`microsoft/Dataverse-skills`](https://github.com/microsoft/Dataverse-skills)
-repository; avoid duplicate installs from two marketplaces.
+> Read skills/power-platform-integrations/SKILL.md in this repository. Set up
+> Power Platform Skills, including Dataverse, and Copilot Studio MCP for my
+> Copilot desktop app. Show the plan and ask before changing anything.
 
-**The exact desktop marketplace UI and registration flow are not verified
-across app versions.** Do not paste CLI `/plugin` commands into a terminal or
-assume a repository URL installs plugins. If the controls are absent, consult
-your app's current documentation/admin instead of installing Copilot CLI as a
-workaround. Confirm the chosen plugin appears installed and its capabilities
-are available in the desktop app.
+The [integration skill](skills/power-platform-integrations/SKILL.md) uses these
+supported paths:
 
-Only afterward, intentionally set up the plugin's connections and sign-in using
-the correct account, tenant, and environment. Relevant licensing, roles, and
-environment access are separate requirements. Setup does not inspect or store
-tokens, choose an environment, run `az login` / `pac auth create`, enable agent
-auto-approval, enable Windows features, or write cloud resources.
-Some plugins have additional workflow-specific prerequisites; this bootstrap
-does not promise every feature is usable immediately.
+| Integration | What the skill can do after approval |
+|---|---|
+| Power Platform plugins | Use an **already available** supported `copilot plugin` command to add the official marketplace and install approved plugins. Verify desktop visibility afterward. If no supported executable is available, use/guide the documented desktop Customize flow; do not install another agent host. |
+| Copilot Studio MCP | Use an existing supported `copilot mcp add` command, or safely merge one server entry into the documented user configuration `%USERPROFILE%\.copilot\mcp-config.json`. No CLI installation is required for the file route. |
+| Sign-in and environment access | Leave these separate. Registering a server does not authorize sign-in, tenant selection, connector setup, or cloud operations. |
+
+[GitHub's desktop documentation](https://docs.github.com/en/copilot/how-tos/github-copilot-app/customize-github-copilot-app)
+confirms that repository/CLI-configured skills and MCP servers are available in
+the desktop app. A full plugin can contain additional components; a CLI plugin
+listing alone does not prove that all of them work in the desktop app.
+The skill must distinguish **configured** from **runtime-verified**, preserve
+existing settings, avoid duplicate installs, and stop on real failures.
+
+### Why not simply run the two often-shared commands?
+
+The official
+[`microsoft/power-platform-skills`](https://github.com/microsoft/power-platform-skills)
+`scripts/install.js --include-dataverse` is a broad installer. It detects
+Copilot CLI/Claude Code, can configure both if present, may install PAC, and
+enables auto-update. It can be useful when those effects are intended, but it
+is not a desktop-only installer. This project's skill prefers scoped
+plugin-management commands instead of silently running that broad installer.
+Explicitly requesting it still requires review/approval of its effects.
+
+`npx -y @microsoft/copilot-studio-mcp@latest` **launches a server**; by itself it
+does not register that server with the app. The skill saves the approved launch
+configuration so the app can start it over stdio when needed. The first launch
+can download/cache the package; `@latest` permits future version changes.
+The [package instructions](https://www.npmjs.com/package/@microsoft/copilot-studio-mcp)
+currently require Node 22.18+ and recommend Node 24 LTS. Do not start a standalone
+server in a terminal and mistake the running process for a completed integration.
+
+### Desktop controls, verification, and sign-in
+
+The documented desktop path is **Customize**, then marketplace settings beside
+the marketplace dropdown to add `microsoft/power-platform-skills`; find and
+**Install** the chosen plugins. Examples include `canvas-apps`,
+`code-apps-preview`, `model-apps`, and `power-automate`. Dataverse is explicit
+opt-in and comes from
+[`microsoft/Dataverse-skills`](https://github.com/microsoft/Dataverse-skills);
+avoid duplicate installs from two marketplaces. For a custom MCP server,
+use **Customize > MCP**. Check **Installed** afterward.
+
+These are documented controls, not a claim that every app version or enterprise
+policy exposes the same UI. Refresh/restart the app/session if necessary and
+verify that the actual capabilities appear. This repository's tests do **not**
+install plugins, register an MCP server, or prove a live desktop integration.
+
+Only afterward, intentionally set up sign-in/connections using the correct
+account, tenant, and environment. Relevant licensing and permissions remain
+separate. Neither setup stage collects tokens, runs `az login` / `pac auth
+create`, enables agent auto-approval or Windows features, or writes cloud
+resources. Some plugins have additional workflow-specific prerequisites.
 
 **PAC limitation:** Microsoft's .NET tool does not include `pac data` or certain
 `pac package` commands (`deploy`, `show`), even on Windows.

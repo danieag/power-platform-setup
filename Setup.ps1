@@ -87,9 +87,11 @@ function Get-SetupState {
             $npmVersion = ConvertTo-ToolVersion ((Get-Content -LiteralPath $npmManifest -Raw | ConvertFrom-Json).version)
         }
     }
-    $ready = $null -ne $version -and $version.Major -in @(22, 24) -and
+    $nodeSupported = $null -ne $version -and
+        (($version.Major -eq 22 -and $version -ge [version]'22.18.0') -or $version.Major -eq 24)
+    $ready = $nodeSupported -and
         $null -ne $npmVersion -and $npmVersion -ge [version]'10.0.0'
-    New-ToolState 'node' "Node.js / npm ($npmVersion)" $version $ready $node 'Node 22 or 24 LTS with bundled npm >= 10'
+    New-ToolState 'node' "Node.js / npm ($npmVersion)" $version $ready $node 'Node 22.18+ or 24 LTS with bundled npm >= 10'
 
     $dotnet = Find-SetupExecutable 'dotnet.exe' @("$env:ProgramFiles\dotnet\dotnet.exe")
     $sdk = $null
