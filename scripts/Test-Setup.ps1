@@ -45,7 +45,7 @@ function New-TestState {
     foreach ($id in $ids) {
         [pscustomobject]@{
             Id = $id; Name = $id; Ready = $id -in $Ready
-            Version = [version]'24.1.0'; Path = "C:\test\$id.exe"; Requirement = 'test'
+            Version = [version]'24.1.0'; Path = "C:\test\$id.exe"; Requirement = 'test'; Architecture = 'x64'
         }
     }
 }
@@ -73,8 +73,70 @@ Test-Case 'architecture gate rejects unsupported operating systems' {
     } finally { $env:OS = $old }
 }
 
+Test-Case 'architecture detection uses native Windows metadata even in an emulated process' {
+    $script:nativeArchitecture = 'ARM64'
+    $script:windowsBuild = 26100
+    function Get-ItemPropertyValue {
+        param($LiteralPath, $Name)
+        if ($Name -eq 'PROCESSOR_ARCHITECTURE') { return $script:nativeArchitecture }
+        return $script:windowsBuild
+    }
+    $old = $env:PROCESSOR_ARCHITECTURE
+    try {
+        $env:PROCESSOR_ARCHITECTURE = 'AMD64'
+        Assert-Equal (Get-SetupArchitecture) 'arm64'
+        $script:nativeArchitecture = 'AMD64'
+        Assert-Equal (Get-SetupArchitecture) 'x64'
+        $script:windowsBuild = 19045
+        Assert-Equal (Get-SetupArchitecture) 'x64'
+        $script:nativeArchitecture = 'ARM64'
+        Assert-Throws { Get-SetupArchitecture } 'Windows 11 on ARM64'
+        $script:nativeArchitecture = 'x86'
+        Assert-Throws { Get-SetupArchitecture } '32-bit Windows'
+        $script:nativeArchitecture = 'AMD64'
+        $script:windowsBuild = 18363
+        Assert-Throws { Get-SetupArchitecture } '19045'
+    } finally { $env:PROCESSOR_ARCHITECTURE = $old }
+}
+
+Test-Case 'binary architecture reads PE headers without executing code and rejects malformed files' {
+    $path = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N') + '.bin')
+    try {
+        foreach ($case in @(
+            @{ Machine = 0x8664; Architecture = 'x64' },
+            @{ Machine = 0xAA64; Architecture = 'arm64' },
+            @{ Machine = 0xA641; Architecture = 'arm64' },
+            @{ Machine = 0x014C; Architecture = 'x86' },
+            @{ Machine = 0xFFFF; Architecture = 'unknown' })) {
+            $bytes = New-Object byte[] 128
+            [BitConverter]::GetBytes([uint16]0x5A4D).CopyTo($bytes, 0)
+            [BitConverter]::GetBytes([int]64).CopyTo($bytes, 0x3C)
+            [BitConverter]::GetBytes([uint32]0x00004550).CopyTo($bytes, 64)
+            [BitConverter]::GetBytes([uint16]$case.Machine).CopyTo($bytes, 68)
+            [IO.File]::WriteAllBytes($path, $bytes)
+            Assert-Equal (Get-ExecutableArchitecture $path) $case.Architecture
+        }
+        [IO.File]::WriteAllBytes($path, [byte[]]@(1, 2, 3))
+        Assert-Equal (Get-ExecutableArchitecture $path) 'unknown'
+        [BitConverter]::GetBytes([int]9999).CopyTo($bytes, 0x3C)
+        [IO.File]::WriteAllBytes($path, $bytes)
+        Assert-Equal (Get-ExecutableArchitecture $path) 'unknown'
+    } finally {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+}
+
+Test-Case 'binary compatibility preserves emulated tools only on compatible Windows architectures' {
+    Assert-Equal (Test-ExecutableArchitecture 'arm64' 'arm64') $true
+    Assert-Equal (Test-ExecutableArchitecture 'x64' 'arm64') $true
+    Assert-Equal (Test-ExecutableArchitecture 'x86' 'arm64') $true
+    Assert-Equal (Test-ExecutableArchitecture 'arm64' 'x64') $false
+    Assert-Equal (Test-ExecutableArchitecture 'unknown' 'arm64') $false
+    Assert-Equal (Test-ExecutableArchitecture $null 'x64') $false
+}
+
 Test-Case 'check-only cannot reach mutating, network or prompt operations' {
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { New-TestState }
     function Install-SetupTool { throw 'INSTALL FORBIDDEN' }
     function Update-SetupPath { throw 'PATH CHANGE FORBIDDEN' }
@@ -101,6 +163,7 @@ Test-Case 'real local inventory never invokes a CLI or a network/write operation
 
 Test-Case 'inventory recognizes compatible binaries, bundled npm and the SDK rather than runtime' {
     function Find-SetupExecutable { param($Name, $Candidates) "C:\fixture\$Name" }
+    function Get-ExecutableArchitecture { 'x64' }
     function Get-BinaryVersion {
         param($Path)
         if ($Path -like '*git.exe') { return [version]'2.56.0' }
@@ -121,6 +184,7 @@ Test-Case 'inventory recognizes compatible binaries, bundled npm and the SDK rat
 
 Test-Case 'inventory rejects unsupported Node majors, absent npm, and runtime-only dotnet' {
     function Find-SetupExecutable { param($Name, $Candidates) "C:\fixture\$Name" }
+    function Get-ExecutableArchitecture { 'x64' }
     function Get-BinaryVersion { [version]'25.0.0' }
     function Test-Path { $false }
     $state = @(Get-SetupState)
@@ -130,6 +194,7 @@ Test-Case 'inventory rejects unsupported Node majors, absent npm, and runtime-on
 
 Test-Case 'Node compatibility includes the Copilot Studio MCP minimum without accepting other majors' {
     function Find-SetupExecutable { param($Name, $Candidates) "C:\fixture\$Name" }
+    function Get-ExecutableArchitecture { 'x64' }
     function Get-BinaryVersion { $script:nodeUnderTest }
     function Test-Path { $true }
     function Get-Content { '{"version":"10.9.0"}' }
@@ -145,8 +210,45 @@ Test-Case 'Node compatibility includes the Copilot Studio MCP minimum without ac
     }
 }
 
+Test-Case 'ARM64 inventory preserves compatible x64 tools but requires PAC to match its SDK host' {
+    function Find-SetupExecutable { param($Name, $Candidates) "C:\fixture\$Name" }
+    $script:pacArchitecture = 'x64'
+    function Get-ExecutableArchitecture {
+        param($Path)
+        if ($Path -like '*pac.exe') { return $script:pacArchitecture }
+        return 'x64'
+    }
+    function Get-BinaryVersion {
+        param($Path)
+        if ($Path -like '*git.exe') { return [version]'2.56.0' }
+        if ($Path -like '*node.exe') { return [version]'24.10.0' }
+        return [version]'2.11.2'
+    }
+    function Test-Path { $true }
+    function Get-Content { '{"version":"11.0.0"}' }
+    function Get-ChildItem { [pscustomobject]@{ Name = '10.0.100'; FullName = 'C:\fixture\sdk\10.0.100' } }
+    $state = @(Get-SetupState -Architecture arm64)
+    Assert-Equal (@($state | Where-Object { -not $_.Ready }).Count) 0
+    Assert-Equal ($state | Where-Object Id -eq 'pac').Architecture 'x64'
+    $script:pacArchitecture = 'arm64'
+    Assert-Equal (Get-SetupState -Architecture arm64 | Where-Object Id -eq 'pac').Ready $false
+}
+
+Test-Case 'optional Azure inventory reads the bundled Python architecture without launching it' {
+    function Find-SetupExecutable { param($Name, $Candidates) "C:\fixture\wbin\$Name" }
+    function Get-ExecutableArchitecture { 'x64' }
+    function Get-BinaryVersion { [version]'24.10.0' }
+    function Test-Path { $true }
+    function Get-Content { '{"version":"11.0.0"}' }
+    function Get-ChildItem {}
+    function Get-ItemProperty { [pscustomobject]@{ DisplayName = 'Microsoft Azure CLI (64-bit)'; DisplayVersion = '2.91.0' } }
+    $azure = Get-SetupState -Azure -Architecture arm64 | Where-Object Id -eq 'azure'
+    Assert-Equal $azure.Architecture 'x64'
+    Assert-Equal $azure.Ready $true
+}
+
 Test-Case 'noninteractive mode requires both install and accept' {
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { New-TestState }
     function Read-Host { throw 'PROMPT FORBIDDEN' }
     function Install-SetupTool { throw 'INSTALL FORBIDDEN' }
@@ -157,7 +259,7 @@ Test-Case 'noninteractive mode requires both install and accept' {
 }
 
 Test-Case 'interactive initial launch requires exact explicit approval' {
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { New-TestState }
     function Read-Host { 'yes' }
     function Install-SetupTool { throw 'INSTALL FORBIDDEN' }
@@ -167,7 +269,7 @@ Test-Case 'interactive initial launch requires exact explicit approval' {
 Test-Case 'approved installation obeys order and verifies each tool' {
     $script:installed = @()
     $script:verified = @()
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { param([switch]$Azure) New-TestState -Ready $script:installed -Azure:$Azure }
     function Update-SetupPath {}
     function Install-SetupTool { param($Id) $script:installed += $Id; return $false }
@@ -177,9 +279,26 @@ Test-Case 'approved installation obeys order and verifies each tool' {
     Assert-Equal ($script:verified -join ',') 'git,node,dotnet,pac,azure'
 }
 
+Test-Case 'ARM64 approved installation forwards architecture and retains the same order and opt-in' {
+    $script:installed = @()
+    $script:observedArchitecture = @()
+    function Get-SetupArchitecture { 'arm64' }
+    function Get-SetupState {
+        param([switch]$Azure, $Architecture)
+        $script:observedArchitecture += $Architecture
+        New-TestState -Ready $script:installed -Azure:$Azure
+    }
+    function Update-SetupPath {}
+    function Install-SetupTool { param($Id) $script:installed += $Id; $false }
+    function Confirm-InstalledTool {}
+    Assert-Equal (Invoke-Setup -Install -Accept -NonInteractive -IncludeAzureCli) 0
+    Assert-Equal ($script:installed -join ',') 'git,node,dotnet,pac,azure'
+    Assert-Equal (@($script:observedArchitecture | Where-Object { $_ -ne 'arm64' }).Count) 0
+}
+
 Test-Case 'safe rerun skips compatible tools and does not add Azure by default' {
     $script:installed = @('git', 'node', 'dotnet', 'pac')
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { New-TestState -Ready $script:installed }
     function Install-SetupTool { throw 'INSTALL FORBIDDEN' }
     function Update-SetupPath { throw 'PATH CHANGE FORBIDDEN' }
@@ -191,7 +310,7 @@ Test-Case 'safe rerun skips compatible tools and does not add Azure by default' 
 Test-Case 'partial rerun installs only missing tools' {
     $script:installed = @('git', 'dotnet')
     $script:added = @()
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { New-TestState -Ready $script:installed }
     function Update-SetupPath {}
     function Install-SetupTool { param($Id) $script:installed += $Id; $script:added += $Id; $false }
@@ -202,7 +321,7 @@ Test-Case 'partial rerun installs only missing tools' {
 
 Test-Case 'first failure prevents later installations' {
     $script:attempted = @()
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { New-TestState }
     function Update-SetupPath {}
     function Install-SetupTool { param($Id) $script:attempted += $Id; throw 'simulated failure' }
@@ -212,7 +331,7 @@ Test-Case 'first failure prevents later installations' {
 
 Test-Case 'restart requirement stops the chain without reboot' {
     $script:attempted = @()
-    function Get-SetupArchitecture {}
+    function Get-SetupArchitecture { 'x64' }
     function Get-SetupState { New-TestState }
     function Update-SetupPath {}
     function Install-SetupTool { param($Id) $script:attempted += $Id; $true }
@@ -245,7 +364,7 @@ Test-Case 'Git metadata without checksum fails closed' {
             name = 'Git-2.56.0-64-bit.exe'; digest = ''; browser_download_url = 'https://github.com/test'
         }) }
     }
-    Assert-Throws { Get-InstallerSpec 'git' } 'SHA256'
+    Assert-Throws { Get-InstallerSpec 'git' -Architecture x64 } 'SHA256'
 }
 
 Test-Case 'Git metadata selects only the x64 installer and its SHA256' {
@@ -257,7 +376,7 @@ Test-Case 'Git metadata selects only the x64 installer and its SHA256' {
                 browser_download_url = 'https://github.com/git-for-windows/git/releases/download/test/git.exe'
             }) }
     }
-    $spec = Get-InstallerSpec 'git'
+    $spec = Get-InstallerSpec 'git' -Architecture x64
     Assert-Equal $spec.Hash ('a' * 64)
     Assert-Equal $spec.Admin $false
 }
@@ -272,11 +391,11 @@ Test-Case 'Node metadata selects stable 24 LTS and checksums for its exact MSI' 
     function Invoke-WebRequest {
         [pscustomobject]@{ Content = (('b' * 64) + '  node-v24.10.0-x64.msi') }
     }
-    $spec = Get-InstallerSpec 'node'
+    $spec = Get-InstallerSpec 'node' -Architecture x64
     Assert-Equal $spec.Url 'https://nodejs.org/dist/v24.10.0/node-v24.10.0-x64.msi'
     Assert-Equal $spec.Hash ('b' * 64)
     function Invoke-WebRequest { [pscustomobject]@{ Content = 'no checksum' } }
-    Assert-Throws { Get-InstallerSpec 'node' } 'No SHA256'
+    Assert-Throws { Get-InstallerSpec 'node' -Architecture x64 } 'No SHA256'
 }
 
 Test-Case '.NET metadata selects the latest SDK installer rather than a runtime' {
@@ -293,10 +412,80 @@ Test-Case '.NET metadata selects the latest SDK installer rather than a runtime'
             })
         }
     }
-    $spec = Get-InstallerSpec 'dotnet'
+    $spec = Get-InstallerSpec 'dotnet' -Architecture x64
     Assert-Equal $spec.Url 'https://builds.dotnet.microsoft.com/sdk.exe'
     Assert-Equal $spec.Hash ('c' * 128)
     Assert-Equal $spec.Algorithm 'SHA512'
+    $arm = Get-InstallerSpec 'dotnet' -Architecture arm64
+    Assert-Equal $arm.Url 'https://builds.dotnet.microsoft.com/arm.exe'
+    Assert-Equal $arm.Hash ('d' * 128)
+}
+
+Test-Case 'ARM64 selects native Git and Node MSI assets with exact official checksums' {
+    function Get-OfficialJson {
+        param($Url)
+        if ($Url -like '*git/releases/latest') {
+            return [pscustomobject]@{ assets = @(
+                [pscustomobject]@{ name = 'Git-2.56.0.4-64-bit.exe'; digest = ('sha256:' + ('a' * 64)); browser_download_url = 'x64' },
+                [pscustomobject]@{ name = 'Git-2.56.0.4-arm64.exe'; digest = ('sha256:' + ('b' * 64)); browser_download_url = 'arm64' }) }
+        }
+        return @([pscustomobject]@{ version = 'v24.10.0'; lts = 'Krypton' })
+    }
+    function Invoke-WebRequest {
+        [pscustomobject]@{ Content = (('c' * 64) + '  node-v24.10.0-arm64.msi') }
+    }
+    $git = Get-InstallerSpec 'git' -Architecture arm64
+    Assert-Equal $git.Url 'arm64'
+    Assert-Equal $git.Hash ('b' * 64)
+    $node = Get-InstallerSpec 'node' -Architecture arm64
+    Assert-Equal $node.Url 'https://nodejs.org/dist/v24.10.0/node-v24.10.0-arm64.msi'
+    Assert-Equal $node.Hash ('c' * 64)
+    function Invoke-WebRequest {
+        [pscustomobject]@{ Content = (('c' * 64) + '  node-v24.10.0-x64.msi') }
+    }
+    Assert-Throws { Get-InstallerSpec 'node' -Architecture arm64 } 'Node arm64 MSI'
+}
+
+Test-Case 'ARM64 never silently substitutes x64 Git or SDK when native assets are absent' {
+    function Get-OfficialJson {
+        param($Url)
+        if ($Url -like '*git/releases/latest') {
+            return [pscustomobject]@{ assets = @(
+                [pscustomobject]@{ name = 'Git-2.56.0.4-64-bit.exe'; digest = ('sha256:' + ('a' * 64)); browser_download_url = 'x64' }) }
+        }
+        return [pscustomobject]@{
+            'latest-sdk' = '10.0.100'
+            releases = @([pscustomobject]@{ sdk = [pscustomobject]@{
+                version = '10.0.100'
+                files = @([pscustomobject]@{ rid = 'win-x64'; name = 'sdk.exe'; hash = ('a' * 128); url = 'x64' })
+            } })
+        }
+    }
+    Assert-Throws { Get-InstallerSpec 'git' -Architecture arm64 } 'arm64 installer'
+    Assert-Throws { Get-InstallerSpec 'dotnet' -Architecture arm64 } 'arm64 SDK'
+    $azure = Get-InstallerSpec 'azure' -Architecture arm64
+    Assert-Equal $azure.Url 'https://aka.ms/installazurecliwindowsx64'
+}
+
+Test-Case 'PAC installation uses the selected SDK and requests its architecture only on install' {
+    $script:registered = $false
+    $script:toolCalls = @()
+    function Get-SetupState {
+        [pscustomobject]@{ Id = 'dotnet'; Path = 'C:\fixture\dotnet.exe'; Ready = $true; Architecture = 'arm64' }
+    }
+    function Invoke-SetupNative {
+        param($Path, $Arguments)
+        $script:toolCalls += [pscustomobject]@{ Path = $Path; Arguments = $Arguments }
+        if ($Arguments[1] -eq 'list' -and $script:registered) { return 'microsoft.powerapps.cli.tool 2.11.2 pac' }
+    }
+    Install-PacTool
+    Assert-Equal $script:toolCalls[1].Path 'C:\fixture\dotnet.exe'
+    Assert-Equal ((($script:toolCalls[1].Arguments) -join ' ') -match '--arch arm64') $true
+    Assert-Equal (Test-Path -LiteralPath $script:toolCalls[1].Arguments[5]) $false
+    $script:registered = $true
+    Install-PacTool
+    Assert-Equal $script:toolCalls[3].Arguments[1] 'update'
+    Assert-Equal ($script:toolCalls[3].Arguments -contains '--arch') $false
 }
 
 Test-Case 'checksum and signature verification fail closed' {

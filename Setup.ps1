@@ -21,18 +21,50 @@ $ErrorActionPreference = 'Stop'
 
 function Get-SetupArchitecture {
     if ($env:OS -ne 'Windows_NT') { throw 'This installer supports Windows only.' }
-    $architecture = $env:PROCESSOR_ARCHITEW6432
-    if (-not $architecture) { $architecture = $env:PROCESSOR_ARCHITECTURE }
-    if ($architecture -ne 'AMD64') {
-        throw 'This release supports x64 Windows only, not ARM64 or 32-bit Windows.'
+    # Machine registry is authoritative even when PowerShell itself runs under emulation.
+    $native = Get-ItemPropertyValue -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE
+    switch ($native) {
+        'AMD64' { $architecture = 'x64' }
+        'ARM64' { $architecture = 'arm64' }
+        default { throw 'This release supports x64 and ARM64 Windows only, not 32-bit Windows.' }
     }
     if (-not [Environment]::Is64BitProcess) {
         throw 'Open 64-bit Windows PowerShell or PowerShell and run setup again.'
     }
     $build = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name CurrentBuildNumber
-    if ([int]$build -lt 19045) {
-        throw 'Use vendor-supported x64 Windows 11 or Windows 10 22H2 (build 19045 or newer).'
+    if ([int]$build -lt 19045 -or ($architecture -eq 'arm64' -and [int]$build -lt 22000)) {
+        throw 'Use Windows 11 on ARM64, or vendor-supported x64 Windows 11 / Windows 10 22H2 (build 19045 or newer).'
     }
+    return $architecture
+}
+
+function Get-ExecutableArchitecture {
+    param([AllowNull()][string]$Path)
+    if (-not $Path) { return $null }
+    $stream = [IO.File]::OpenRead($Path)
+    $reader = [IO.BinaryReader]::new($stream)
+    try {
+        if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) { return 'unknown' }
+        $stream.Position = 0x3C
+        $offset = $reader.ReadInt32()
+        if ($offset -lt 64 -or $offset -gt ($stream.Length - 6)) { return 'unknown' }
+        $stream.Position = $offset
+        if ($reader.ReadUInt32() -ne 0x00004550) { return 'unknown' }
+        switch ($reader.ReadUInt16()) {
+            0x8664 { return 'x64' }
+            0xAA64 { return 'arm64' }
+            0xA641 { return 'arm64' }
+            0xA64E { return 'arm64' }
+            0x014C { return 'x86' }
+            default { return 'unknown' }
+        }
+    } finally { $reader.Dispose() }
+}
+
+function Test-ExecutableArchitecture {
+    param([AllowNull()][string]$Actual, [string]$WindowsArchitecture)
+    if ($WindowsArchitecture -eq 'arm64') { return $Actual -in @('arm64', 'x64', 'x86') }
+    return $Actual -in @('x64', 'x86')
 }
 
 function ConvertTo-ToolVersion {
@@ -61,20 +93,22 @@ function Get-BinaryVersion {
 }
 
 function New-ToolState {
-    param([string]$Id, [string]$Name, $Version, [bool]$Ready, [string]$Path, [string]$Requirement)
+    param([string]$Id, [string]$Name, $Version, [bool]$Ready, [string]$Path, [string]$Requirement, [string]$Architecture)
     [pscustomobject]@{
         Id = $Id; Name = $Name; Version = $Version; Ready = $Ready
-        Path = $Path; Requirement = $Requirement
+        Path = $Path; Requirement = $Requirement; Architecture = $Architecture
     }
 }
 
 function Get-SetupState {
-    param([switch]$Azure)
+    param([switch]$Azure, [ValidateSet('x64', 'arm64')][string]$Architecture = (Get-SetupArchitecture))
     # Read files/registry only: even first-run CLI initialization is excluded.
     $git = Find-SetupExecutable 'git.exe' @(
         "$env:ProgramFiles\Git\cmd\git.exe", "$env:LOCALAPPDATA\Programs\Git\cmd\git.exe")
     $version = Get-BinaryVersion $git
-    New-ToolState 'git' 'Git' $version ($null -ne $version -and $version -ge [version]'2.40.0') $git 'Git >= 2.40'
+    $binaryArchitecture = Get-ExecutableArchitecture $git
+    $compatible = Test-ExecutableArchitecture $binaryArchitecture $Architecture
+    New-ToolState 'git' 'Git' $version ($compatible -and $null -ne $version -and $version -ge [version]'2.40.0') $git 'Git >= 2.40' $binaryArchitecture
 
     $node = Find-SetupExecutable 'node.exe' @("$env:ProgramFiles\nodejs\node.exe")
     $version = Get-BinaryVersion $node
@@ -89,11 +123,14 @@ function Get-SetupState {
     }
     $nodeSupported = $null -ne $version -and
         (($version.Major -eq 22 -and $version -ge [version]'22.18.0') -or $version.Major -eq 24)
-    $ready = $nodeSupported -and
+    $binaryArchitecture = Get-ExecutableArchitecture $node
+    $ready = $nodeSupported -and (Test-ExecutableArchitecture $binaryArchitecture $Architecture) -and
         $null -ne $npmVersion -and $npmVersion -ge [version]'10.0.0'
-    New-ToolState 'node' "Node.js / npm ($npmVersion)" $version $ready $node 'Node 22.18+ or 24 LTS with bundled npm >= 10'
+    New-ToolState 'node' "Node.js / npm ($npmVersion)" $version $ready $node 'Node 22.18+ or 24 LTS with bundled npm >= 10' $binaryArchitecture
 
-    $dotnet = Find-SetupExecutable 'dotnet.exe' @("$env:ProgramFiles\dotnet\dotnet.exe")
+    $dotnet = Find-SetupExecutable 'dotnet.exe' @(
+        "$env:ProgramFiles\dotnet\dotnet.exe", "$env:ProgramFiles\dotnet\x64\dotnet.exe")
+    $dotnetArchitecture = Get-ExecutableArchitecture $dotnet
     $sdk = $null
     if ($dotnet) {
         $sdkRoot = Join-Path (Split-Path -Parent $dotnet) 'sdk'
@@ -103,11 +140,15 @@ function Get-SetupState {
                 ForEach-Object { [version]$_.Name } | Sort-Object -Descending | Select-Object -First 1
         }
     }
-    New-ToolState 'dotnet' '.NET SDK' $sdk ($null -ne $sdk) $dotnet '.NET 10.0 stable SDK (not just runtime)'
+    $sdkReady = $null -ne $sdk -and (Test-ExecutableArchitecture $dotnetArchitecture $Architecture)
+    New-ToolState 'dotnet' '.NET SDK' $sdk $sdkReady $dotnet '.NET 10.0 stable SDK (not just runtime)' $dotnetArchitecture
 
     $pac = Find-SetupExecutable 'pac.exe' @("$env:USERPROFILE\.dotnet\tools\pac.exe")
     $version = Get-BinaryVersion $pac
-    New-ToolState 'pac' 'Power Platform CLI' $version ($null -ne $version -and $version -ge [version]'1.0.0') $pac 'PAC >= 1.0; install current stable global .NET tool if missing'
+    $binaryArchitecture = Get-ExecutableArchitecture $pac
+    $ready = $sdkReady -and $binaryArchitecture -eq $dotnetArchitecture -and
+        $null -ne $version -and $version -ge [version]'1.0.0'
+    New-ToolState 'pac' 'Power Platform CLI' $version $ready $pac 'PAC >= 1.0 with a shim matching the selected .NET architecture' $binaryArchitecture
 
     if ($Azure) {
         $az = Find-SetupExecutable 'az.cmd' @(
@@ -120,7 +161,8 @@ function Get-SetupState {
             'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
             if (Test-Path $key) {
                 $entry = Get-ItemProperty $key | Where-Object {
-                    $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -eq 'Microsoft Azure CLI'
+                    $_.PSObject.Properties['DisplayName'] -and
+                        $_.DisplayName -match '^Microsoft Azure CLI(?: \((?:32|64)-bit\))?$'
                 } | Select-Object -First 1
                 if ($entry -and $entry.PSObject.Properties['DisplayVersion']) {
                     $version = ConvertTo-ToolVersion $entry.DisplayVersion
@@ -128,7 +170,14 @@ function Get-SetupState {
                 }
             }
         }
-        New-ToolState 'azure' 'Azure CLI' $version ($null -ne $az -and $null -ne $version -and $version -ge [version]'2.60.0') $az 'Azure CLI MSI >= 2.60 (optional)'
+        $azArchitecture = $null
+        if ($az) {
+            $python = Join-Path (Split-Path -Parent (Split-Path -Parent $az)) 'python.exe'
+            if (Test-Path -LiteralPath $python -PathType Leaf) { $azArchitecture = Get-ExecutableArchitecture $python }
+        }
+        $ready = $null -ne $az -and $null -ne $version -and $version -ge [version]'2.60.0' -and
+            (Test-ExecutableArchitecture $azArchitecture $Architecture)
+        New-ToolState 'azure' 'Azure CLI' $version $ready $az 'Azure CLI MSI >= 2.60 (optional; x64 emulation on ARM64)' $azArchitecture
     }
 }
 
@@ -141,6 +190,7 @@ function Show-SetupState {
         Write-Host ("  [{0}] {1}: {2}" -f $status, $tool.Name, $detected)
         Write-Host "    Required: $($tool.Requirement)"
         if ($tool.Path) { Write-Host "    Found: $($tool.Path)" }
+        if ($tool.Architecture) { Write-Host "    Executable architecture: $($tool.Architecture)" }
     }
     Write-Host "`nDesktop plugins: NOT VERIFIED. Configure separately in the Copilot app; see README."
     Write-Host 'Authentication / environment permissions: NOT CHECKED. Setup never signs you in.'
@@ -184,13 +234,17 @@ function Get-OfficialJson {
 }
 
 function Get-InstallerSpec {
-    param([ValidateSet('git', 'node', 'dotnet', 'azure')][string]$Id)
+    param(
+        [ValidateSet('git', 'node', 'dotnet', 'azure')][string]$Id,
+        [ValidateSet('x64', 'arm64')][string]$Architecture = (Get-SetupArchitecture)
+    )
     switch ($Id) {
         'git' {
             $release = Get-OfficialJson 'https://api.github.com/repos/git-for-windows/git/releases/latest'
-            $asset = @($release.assets | Where-Object { $_.name -match '^Git-[\d.]+-64-bit\.exe$' })
+            $suffix = if ($Architecture -eq 'arm64') { 'arm64' } else { '64-bit' }
+            $asset = @($release.assets | Where-Object { $_.name -match "^Git-[\d.]+-$suffix\.exe$" })
             if ($asset.Count -ne 1 -or $asset[0].digest -notmatch '^sha256:([a-fA-F0-9]{64})$') {
-                throw 'Git release metadata has no unique x64 installer with SHA256 digest. No installer was run.'
+                throw "Git release metadata has no unique $Architecture installer with SHA256 digest. No installer was run."
             }
             $hash = $Matches[1]
             return @{ Url = $asset[0].browser_download_url; File = 'git.exe'; Hash = $hash
@@ -202,11 +256,11 @@ function Get-InstallerSpec {
             $release = $releases | Where-Object { $_.version -match '^v24\.\d+\.\d+$' -and $_.lts } |
                 Select-Object -First 1
             if (-not $release) { throw 'Official metadata contains no stable Node 24 LTS release.' }
-            $file = "node-$($release.version)-x64.msi"
+            $file = "node-$($release.version)-$Architecture.msi"
             $base = "https://nodejs.org/dist/$($release.version)"
             $checksums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHASUMS256.txt" -TimeoutSec 60).Content
             $pattern = '(?m)^([a-fA-F0-9]{64})\s+' + [regex]::Escape($file) + '\s*$'
-            if ($checksums -notmatch $pattern) { throw 'No SHA256 checksum found for the Node x64 MSI.' }
+            if ($checksums -notmatch $pattern) { throw "No SHA256 checksum found for the Node $Architecture MSI." }
             return @{ Url = "$base/$file"; File = 'node.msi'; Hash = $Matches[1]
                 Algorithm = 'SHA256'; Publisher = 'OpenJS Foundation|Node\.js Foundation'; Admin = $true
                 Arguments = '/qn /norestart' }
@@ -215,9 +269,9 @@ function Get-InstallerSpec {
             $metadata = Get-OfficialJson 'https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/10.0/releases.json'
             $release = $metadata.releases | Where-Object { $_.sdk.version -eq $metadata.'latest-sdk' } |
                 Select-Object -First 1
-            $asset = @($release.sdk.files | Where-Object { $_.rid -eq 'win-x64' -and $_.name -like '*.exe' })
+            $asset = @($release.sdk.files | Where-Object { $_.rid -eq "win-$Architecture" -and $_.name -like '*.exe' })
             if ($asset.Count -ne 1 -or $asset[0].hash -notmatch '^[a-fA-F0-9]{128}$') {
-                throw 'No unique .NET 10 x64 SDK installer with SHA512 checksum was found.'
+                throw "No unique .NET 10 $Architecture SDK installer with SHA512 checksum was found."
             }
             return @{ Url = $asset[0].url; File = 'dotnet.exe'; Hash = $asset[0].hash
                 Algorithm = 'SHA512'; Publisher = 'Microsoft Corporation'; Admin = $true
@@ -288,9 +342,9 @@ function Invoke-SetupNative {
 }
 
 function Install-PacTool {
-    $state = @(Get-SetupState)
-    $dotnet = ($state | Where-Object Id -eq 'dotnet').Path
-    if (-not $dotnet) { throw '.NET SDK is not discoverable; open a new terminal and rerun setup.' }
+    $sdk = Get-SetupState | Where-Object Id -eq 'dotnet'
+    if (-not $sdk.Ready) { throw '.NET SDK is not discoverable; open a new terminal and rerun setup.' }
+    $dotnet = $sdk.Path
     # Run outside the repository so a project global.json/NuGet.Config cannot select the SDK/feed.
     $working = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $working | Out-Null
@@ -303,7 +357,9 @@ function Install-PacTool {
 '@ | Set-Content -LiteralPath $config -Encoding UTF8
         $tools = Invoke-SetupNative $dotnet @('tool', 'list', '--global')
         $verb = if ($tools -match '(?im)^microsoft\.powerapps\.cli\.tool\s') { 'update' } else { 'install' }
-        Invoke-SetupNative $dotnet @('tool', $verb, '--global', 'Microsoft.PowerApps.CLI.Tool', '--configfile', $config) | Out-Null
+        $arguments = @('tool', $verb, '--global', 'Microsoft.PowerApps.CLI.Tool', '--configfile', $config)
+        if ($verb -eq 'install') { $arguments += @('--arch', $sdk.Architecture) }
+        Invoke-SetupNative $dotnet $arguments | Out-Null
     } finally {
         Pop-Location
         Remove-Item -LiteralPath $working -Recurse -Force
@@ -365,8 +421,14 @@ function Invoke-Setup {
         return 2
     }
     try {
-        Get-SetupArchitecture
-        $state = @(Get-SetupState -Azure:$IncludeAzureCli)
+        $architecture = Get-SetupArchitecture
+        Write-Host "Windows architecture: $architecture (setup process: $env:PROCESSOR_ARCHITECTURE)"
+        Write-Host "Missing Git, Node and .NET will use native $architecture installers. PAC will match the selected .NET host."
+        if ($architecture -eq 'arm64') {
+            Write-Host 'Compatible existing x64/x86 tools are preserved and use Windows 11 emulation.'
+            if ($IncludeAzureCli) { Write-Host 'Optional Azure CLI uses the official x64 MSI under Windows 11 emulation, not a native ARM64 build.' }
+        }
+        $state = @(Get-SetupState -Azure:$IncludeAzureCli -Architecture $architecture)
         Show-SetupState $state
         $pending = @($state | Where-Object { -not $_.Ready })
         if ($pending.Count -eq 0) {
@@ -397,7 +459,7 @@ function Invoke-Setup {
                 Write-Host 'Setup stopped before installing further prerequisites. No reboot was requested by this script.'
                 return 3010
             }
-            $state = @(Get-SetupState -Azure:$IncludeAzureCli)
+            $state = @(Get-SetupState -Azure:$IncludeAzureCli -Architecture $architecture)
             Confirm-InstalledTool $tool.Id $state
         }
         Show-SetupState $state

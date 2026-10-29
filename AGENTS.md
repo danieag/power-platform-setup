@@ -49,6 +49,10 @@ than trying to bypass them.
   optional `skills/power-platform-setup/SKILL.md` must remain thin wrappers.
 - Preserve compatible installs and inherited process PATH entries. Fail
   explicitly on unverified downloads, installer failures, and version mismatch.
+- Keep x64 and ARM64 support in the same installer. Detect native Windows
+  architecture independently of an emulated shell; prefer native new installs,
+  preserve compatible existing emulated tools, and verify PAC/SDK architecture
+  matching. Explicitly identify optional x64 Azure CLI emulation on ARM64.
 - Use only the fixed official sources with the integrity checks in the README.
   Do not introduce user-supplied installer URLs or executable pipeline downloads.
 - Check-only must remain **read-only, offline, and CLI-free**, including on a
@@ -57,7 +61,7 @@ than trying to bypass them.
   PowerShell 7 when available. Run `.\scripts\New-Release.ps1` to check packaging.
   Do **not** exercise real installation paths on a shared developer host.
 - Full clean-machine acceptance requires a separately authorized disposable
-  x64 Windows VM/Sandbox. Do not present mocks as proof that vendor installers
-  ran successfully end to end.
+  Windows VM/Sandbox for each architecture being tested. Do not present x64
+  runners with ARM64 mocks as proof that ARM64 vendor installers ran successfully.
 - Package public files through the explicit release allowlist, not `*` or the
   entire workspace. Never include tokens, local settings, or personal paths.

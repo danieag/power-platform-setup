@@ -14,6 +14,10 @@ does not automatically register this skill in the desktop app.
    source if it is not already available locally. Do not run unreviewed downloads.
 2. Run `.\Setup.cmd -CheckOnly` in that folder. Add `-IncludeAzureCli` only if the
    requested workflow needs it. This mode is offline and read-only.
+   Use the same launcher on x64 and ARM64 Windows 11; it detects native Windows
+   architecture even in an emulated terminal. Explain any existing emulated
+   tools and optional x64 Azure CLI emulation shown in the plan. Do not replace
+   the script with ad hoc architecture-specific installation commands.
 3. Summarize the plan and ask the user to explicitly approve installing the
    missing/unsupported tools and accepting the applicable software licenses.
 4. After approval, run
